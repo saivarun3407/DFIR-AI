@@ -6,7 +6,6 @@ TODO markers indicate W2 implementation targets.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from ..sandbox import assert_input_path

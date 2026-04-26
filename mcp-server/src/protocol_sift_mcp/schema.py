@@ -3,20 +3,20 @@
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 
-class Confidence(str, Enum):
+class Confidence(StrEnum):
     CONFIRMED = "confirmed"
     INFERRED = "inferred"
     UNCERTAIN = "uncertain"
     UNKNOWN = "unknown"
 
 
-class LocatorType(str, Enum):
+class LocatorType(StrEnum):
     REGISTRY_PATH = "registry_path"
     FILE_OFFSET = "file_offset"
     SQL_ROW = "sql_row"
@@ -76,7 +76,11 @@ class ChainEntry(BaseModel):
     ts: datetime
     event: ChainEvent
     data: dict[str, Any]
-    hash: str = Field(min_length=64, max_length=64, description="sha256 hex of seq||prev_hash||ts||event||canonical_data")
+    hash: str = Field(
+        min_length=64,
+        max_length=64,
+        description="sha256 hex of seq||prev_hash||ts||event||canonical_data",
+    )
 
 
 class Attestation(BaseModel):

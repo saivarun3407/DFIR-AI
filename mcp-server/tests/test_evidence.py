@@ -6,12 +6,9 @@ import json
 from pathlib import Path
 
 import pytest
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from cryptography.hazmat.primitives.serialization import (
-    Encoding,
-    PublicFormat,
-    load_pem_private_key,
-)
+from pydantic import ValidationError
 
 from protocol_sift_mcp.tools import evidence as ev
 
@@ -165,7 +162,7 @@ def test_signature_fails_on_tamper(tmp_path: Path) -> None:
     findings.write_text('[{"finding_id":"F-2"}]')
 
     pub = Ed25519PublicKey.from_public_bytes(pub_path.read_bytes())
-    with pytest.raises(Exception):
+    with pytest.raises(InvalidSignature):
         pub.verify(sig, findings.read_bytes())
 
 
@@ -206,7 +203,7 @@ def test_finding_record_rejects_empty_pins(tmp_path: Path) -> None:
         "confidence": "inferred",
         "pins": [],
     }
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         fd.finding_record(findings, bad)
 
 

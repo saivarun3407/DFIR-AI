@@ -8,7 +8,7 @@ primitives are real on day one because they gate everything else.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from mcp.server import Server
@@ -115,7 +115,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             data={
                 "scope": arguments["scope"],
                 "reason": arguments["reason"],
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
             },
         )
         return [TextContent(type="text", text=str(entry))]

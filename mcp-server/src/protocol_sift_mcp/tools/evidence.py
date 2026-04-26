@@ -10,13 +10,12 @@ import argparse
 import hashlib
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
-    Ed25519PublicKey,
 )
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
@@ -26,7 +25,7 @@ from cryptography.hazmat.primitives.serialization import (
     load_pem_private_key,
 )
 
-from ..sandbox import assert_input_path, assert_output_path
+from ..sandbox import assert_input_path
 
 GENESIS_HASH = "GENESIS"
 HASH_ALGO = "sha256"
@@ -75,7 +74,7 @@ def chain_init(
         with chain_path.open() as f:
             return json.loads(f.readline())
 
-    ts = datetime.now(timezone.utc).isoformat()
+    ts = datetime.now(UTC).isoformat()
     data = {
         "case_id": case_id,
         "evidence_path": evidence_path,
@@ -114,7 +113,7 @@ def chain_append(chain_path: Path, *, event: str, data: dict) -> dict:
 
     seq = last_entry["seq"] + 1
     prev_hash = last_entry["hash"]
-    ts = datetime.now(timezone.utc).isoformat()
+    ts = datetime.now(UTC).isoformat()
     entry = {
         "seq": seq,
         "prev_hash": prev_hash,
@@ -157,8 +156,10 @@ def chain_verify(chain_path: Path) -> tuple[bool, list[str]]:
                 )
                 return False, problems
             if entry.get("prev_hash") != expected_prev:
+                got = entry.get("prev_hash")
                 problems.append(
-                    f"line {line_num} seq={expected_seq}: prev_hash mismatch (expected {expected_prev}, got {entry.get('prev_hash')})"
+                    f"line {line_num} seq={expected_seq}: prev_hash mismatch "
+                    f"(expected {expected_prev}, got {got})"
                 )
                 return False, problems
 
@@ -170,8 +171,10 @@ def chain_verify(chain_path: Path) -> tuple[bool, list[str]]:
                 entry["data"],
             )
             if recomputed != entry.get("hash"):
+                stored = entry.get("hash")
                 problems.append(
-                    f"line {line_num} seq={expected_seq}: hash mismatch (recomputed {recomputed}, stored {entry.get('hash')})"
+                    f"line {line_num} seq={expected_seq}: hash mismatch "
+                    f"(recomputed {recomputed}, stored {stored})"
                 )
                 return False, problems
 
@@ -249,7 +252,7 @@ def attest(
             "model": model,
             "case_id": case_id,
             "chain_root_hash": chain_root_hash,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "completed_at": datetime.now(UTC).isoformat(),
             "signature_algorithm": "ed25519",
             "signature": signature,
         },

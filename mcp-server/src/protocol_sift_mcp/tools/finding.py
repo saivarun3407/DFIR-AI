@@ -7,7 +7,7 @@ without this gate.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from ..schema import Finding
@@ -26,7 +26,7 @@ def finding_record(findings_path: Path, finding: dict) -> dict:
         existing = []
 
     record = parsed.model_dump(mode="json")
-    record["recorded_at"] = datetime.now(timezone.utc).isoformat()
+    record["recorded_at"] = datetime.now(UTC).isoformat()
     existing.append(record)
     findings_path.write_text(json.dumps(existing, indent=2, default=str))
     return record
