@@ -109,6 +109,69 @@ async def list_tools() -> list[Tool]:
                 "required": ["hive_path"],
             },
         ),
+        Tool(
+            name="win_prefetch_parse",
+            description=(
+                "Parse a Windows .pf prefetch file. Returns executable_name, version, "
+                "run_count, last_run_times (up to 8 for Win8+), volumes, files_accessed, "
+                "directories. Prefetch is the strongest single-source proof of execution."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "prefetch_path": {"type": "string", "description": "Path to .pf under /input"},
+                },
+                "required": ["prefetch_path"],
+            },
+        ),
+        Tool(
+            name="win_evtx_query",
+            description=(
+                "Query a Windows Event Log (.evtx). Returns {record_id, eid, channel, "
+                "time_created, computer, xml} per record. Filter by event_ids and time_range. "
+                "xml is the raw record — cite as raw_excerpt in pins."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "log_path": {"type": "string", "description": "Path to .evtx under /input"},
+                    "event_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Filter to these EIDs (e.g. [4624, 4625, 4648])",
+                    },
+                    "time_range": {
+                        "type": "array",
+                        "minItems": 2,
+                        "maxItems": 2,
+                        "items": {"type": "string"},
+                        "description": "(since_iso, until_iso) inclusive",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 1000,
+                        "minimum": 1,
+                        "maximum": 100000,
+                    },
+                },
+                "required": ["log_path"],
+            },
+        ),
+        Tool(
+            name="win_lnk_parse",
+            description=(
+                "Parse a Windows shortcut (.lnk). Returns target, target MACB timestamps, "
+                "drive serial + type, machine_id, working_dir, arguments, network_share. "
+                "Use for File/Folder Opening + USB activity reconstruction."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "lnk_path": {"type": "string", "description": "Path to .lnk under /input"},
+                },
+                "required": ["lnk_path"],
+            },
+        ),
     ]
 
 
@@ -156,6 +219,26 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             arguments["hive_path"],
             arguments.get("registry_path", ""),
         )
+        return [TextContent(type="text", text=str(result))]
+    if name == "win_prefetch_parse":
+        result = win.win_prefetch_parse(arguments["prefetch_path"])
+        return [TextContent(type="text", text=str(result))]
+    if name == "win_evtx_query":
+        time_range_arg = arguments.get("time_range")
+        time_tuple = (
+            (time_range_arg[0], time_range_arg[1])
+            if time_range_arg and len(time_range_arg) == 2
+            else None
+        )
+        result = win.win_evtx_query(
+            arguments["log_path"],
+            event_ids=arguments.get("event_ids"),
+            time_range=time_tuple,
+            limit=arguments.get("limit", 1000),
+        )
+        return [TextContent(type="text", text=str(result))]
+    if name == "win_lnk_parse":
+        result = win.win_lnk_parse(arguments["lnk_path"])
         return [TextContent(type="text", text=str(result))]
     raise ValueError(f"Unknown tool: {name}")
 

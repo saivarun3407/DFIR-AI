@@ -138,27 +138,225 @@ def _safe_path(key: Any, fallback: str) -> str:
         return fallback or "(root)"
 
 
+class PrefetchToolError(Exception):
+    """Boundary error for windowsprefetch failures."""
+
+
+class EvtxToolError(Exception):
+    """Boundary error for python-evtx failures."""
+
+
+class LnkToolError(Exception):
+    """Boundary error for pylnk3 failures."""
+
+
+def _import_prefetch() -> Any:
+    try:
+        from windowsprefetch import Prefetch
+    except ImportError as exc:
+        raise PrefetchToolError(
+            "windowsprefetch not installed. "
+            "Install with: pip install -e 'mcp-server[forensics]'"
+        ) from exc
+    return Prefetch
+
+
+def _import_evtx() -> Any:
+    try:
+        import Evtx.Evtx as evtx
+    except ImportError as exc:
+        raise EvtxToolError(
+            "python-evtx not installed. "
+            "Install with: pip install -e 'mcp-server[forensics]'"
+        ) from exc
+    return evtx
+
+
+def _import_lnk() -> Any:
+    try:
+        import pylnk3
+    except ImportError as exc:
+        raise LnkToolError(
+            "pylnk3 not installed. "
+            "Install with: pip install -e 'mcp-server[forensics]'"
+        ) from exc
+    return pylnk3
+
+
+def win_prefetch_parse(prefetch_path: str) -> dict[str, Any]:
+    """Parse a Windows .pf prefetch file.
+
+    Returns: executable_name, run_count, last_run_times (up to 8 for Win8+),
+    version (17/23/26/30=XP/7/8/10), volumes, files_accessed, directories.
+    Win10 prefetch is XPRESS-Huffman compressed; the underlying library
+    handles decompression. raw_excerpt for pins should cite the .pf path
+    and a specific timestamp index.
+    """
+    p = assert_input_path(prefetch_path)
+    Prefetch = _import_prefetch()
+    try:
+        pf = Prefetch(str(p))
+    except Exception as exc:
+        raise PrefetchToolError(f"Failed to parse prefetch {p.name}: {exc}") from exc
+
+    last_run_times: list[str] = []
+    raw_lrt = getattr(pf, "lastRunTime", None) or getattr(pf, "lastRunTimes", None)
+    if raw_lrt is not None:
+        items = raw_lrt if isinstance(raw_lrt, list) else [raw_lrt]
+        for ts in items:
+            try:
+                last_run_times.append(ts.isoformat())
+            except Exception:  # noqa: S112 — skip a single malformed timestamp
+                continue
+
+    return {
+        "path": str(p),
+        "executable_name": getattr(pf, "executableName", None),
+        "version": getattr(pf, "version", None),
+        "run_count": getattr(pf, "runCount", None),
+        "last_run_times": last_run_times,
+        "volumes": list(getattr(pf, "volumesInformation", []) or []),
+        "files_accessed": list(getattr(pf, "filesAccessed", []) or []),
+        "directories": list(getattr(pf, "directoryStrings", []) or []),
+    }
+
+
 def win_evtx_query(
     log_path: str,
     *,
     event_ids: list[int] | None = None,
     time_range: tuple[str, str] | None = None,
+    limit: int = 1000,
 ) -> list[dict[str, Any]]:
-    """TODO(W2): Use python-evtx to filter records by EID and time."""
-    _ = assert_input_path(log_path)
-    raise NotImplementedError("win_evtx_query — implement W2")
+    """Query a Windows Event Log (.evtx) file.
 
+    Args:
+        log_path: path under /input to .evtx file
+        event_ids: optional list of EID filters (e.g. [4624, 4625, 4648])
+        time_range: optional (since_iso, until_iso) tuple, inclusive
+        limit: max records returned (default 1000)
 
-def win_prefetch_parse(prefetch_path: str) -> dict[str, Any]:
-    """TODO(W2): Parse a .pf file — return last 8 exec times, run count, file handles."""
-    _ = assert_input_path(prefetch_path)
-    raise NotImplementedError("win_prefetch_parse — implement W2")
+    Returns: list of {record_id, eid, channel, time_created, computer, xml}.
+    XML field is the raw record XML — agent cites it in pin raw_excerpt.
+    """
+    p = assert_input_path(log_path)
+    evtx = _import_evtx()
+
+    eid_filter = set(event_ids) if event_ids else None
+    since_iso, until_iso = time_range if time_range else (None, None)
+
+    try:
+        log = evtx.Evtx(str(p))
+    except Exception as exc:
+        raise EvtxToolError(f"Failed to open evtx {p.name}: {exc}") from exc
+
+    results: list[dict[str, Any]] = []
+    try:
+        with log as opened:
+            for record in opened.records():
+                if len(results) >= limit:
+                    break
+                xml = record.xml()
+                eid = _parse_evtx_eid(xml)
+                if eid_filter and eid not in eid_filter:
+                    continue
+                ts = _parse_evtx_time(xml)
+                if since_iso and ts and ts < since_iso:
+                    continue
+                if until_iso and ts and ts > until_iso:
+                    continue
+                results.append(
+                    {
+                        "record_id": _parse_evtx_record_id(xml),
+                        "eid": eid,
+                        "channel": _parse_evtx_channel(xml),
+                        "time_created": ts,
+                        "computer": _parse_evtx_computer(xml),
+                        "xml": xml,
+                    }
+                )
+    except Exception as exc:
+        raise EvtxToolError(f"Failed to iterate evtx {p.name}: {exc}") from exc
+    return results
 
 
 def win_lnk_parse(lnk_path: str) -> dict[str, Any]:
-    """TODO(W2): Parse LNK — target MACB, volume info, network share, system name."""
-    _ = assert_input_path(lnk_path)
-    raise NotImplementedError("win_lnk_parse — implement W2")
+    """Parse a Windows shortcut (.lnk) file.
+
+    Returns: target path, target MACB timestamps, volume info, network share,
+    working directory, command-line arguments, original file size,
+    machine name (system that created the shortcut). Useful for tracking
+    USB activity, file/folder opens, and timeline reconstruction.
+    """
+    p = assert_input_path(lnk_path)
+    pylnk3 = _import_lnk()
+    try:
+        with open(str(p), "rb") as fh:  # noqa: PTH123 — pylnk3 expects file handle
+            link = pylnk3.parse(fh)
+    except Exception as exc:
+        raise LnkToolError(f"Failed to parse lnk {p.name}: {exc}") from exc
+
+    return {
+        "path": str(p),
+        "target": getattr(link, "path", None) or getattr(link, "lnk_path", None),
+        "working_dir": getattr(link, "working_dir", None),
+        "arguments": getattr(link, "arguments", None),
+        "description": getattr(link, "description", None),
+        "machine_id": getattr(link, "machine_id", None),
+        "drive_serial": getattr(link, "drive_serial", None),
+        "drive_type": str(getattr(link, "drive_type", None)) if hasattr(link, "drive_type") else None,
+        "creation_time": _to_iso(getattr(link, "creation_time", None)),
+        "modification_time": _to_iso(getattr(link, "modification_time", None)),
+        "access_time": _to_iso(getattr(link, "access_time", None)),
+        "file_size": getattr(link, "file_size", None),
+        "network_share": getattr(link, "network_share_name", None),
+    }
+
+
+def _to_iso(v: Any) -> str | None:
+    if v is None:
+        return None
+    try:
+        return v.isoformat()
+    except Exception:
+        return str(v)
+
+
+def _parse_evtx_eid(xml: str) -> int | None:
+    import re
+
+    m = re.search(r"<EventID[^>]*>(\d+)</EventID>", xml)
+    return int(m.group(1)) if m else None
+
+
+def _parse_evtx_record_id(xml: str) -> str | None:
+    import re
+
+    m = re.search(r'EventRecordID="?(\d+)"?', xml) or re.search(
+        r"<EventRecordID>(\d+)</EventRecordID>", xml
+    )
+    return m.group(1) if m else None
+
+
+def _parse_evtx_channel(xml: str) -> str | None:
+    import re
+
+    m = re.search(r"<Channel>([^<]+)</Channel>", xml)
+    return m.group(1) if m else None
+
+
+def _parse_evtx_time(xml: str) -> str | None:
+    import re
+
+    m = re.search(r'SystemTime="([^"]+)"', xml)
+    return m.group(1) if m else None
+
+
+def _parse_evtx_computer(xml: str) -> str | None:
+    import re
+
+    m = re.search(r"<Computer>([^<]+)</Computer>", xml)
+    return m.group(1) if m else None
 
 
 def win_shellbag_parse(hive_path: str) -> list[dict[str, Any]]:
