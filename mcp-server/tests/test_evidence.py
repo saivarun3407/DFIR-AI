@@ -16,9 +16,9 @@ from protocol_sift_mcp.tools import evidence as ev
 def test_hash_file_dual_algorithm(tmp_path: Path) -> None:
     f = tmp_path / "input" / "sample.bin"
     f.parent.mkdir(exist_ok=True)
-    f.write_bytes(b"the quick brown fox jumps over the lazy dog")
+    f.write_bytes(b"The quick brown fox jumps over the lazy dog")
     digest = ev.hash_file(f)
-    assert digest["sha256"] == "05c6e08f1d9fdafa03147fcb8f82f124c76d2f70e3d989dc8aadb5e7d7450bec"
+    assert digest["sha256"] == "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592"
     assert digest["sha1"] == "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12"
     assert digest["size"] == 43
 
