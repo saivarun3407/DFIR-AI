@@ -17,6 +17,7 @@ from mcp.types import TextContent, Tool
 
 from .tools import evidence as ev
 from .tools import finding as fd
+from .tools import parse as ps
 from .tools import windows as win
 
 OUTPUT_PATH = Path(os.environ.get("OUTPUT_PATH", "/output"))
@@ -172,6 +173,35 @@ async def list_tools() -> list[Tool]:
                 "required": ["lnk_path"],
             },
         ),
+        Tool(
+            name="os_detect",
+            description=(
+                "Identify which OS produced this evidence artifact. Returns "
+                "{os: windows|macos|linux|memory_dump|unknown, confidence: 0-1, "
+                "evidence_class, signals[], is_directory, size}. Use first on every "
+                "ingested artifact to route to the correct OS specialist subagent. "
+                "Confidence < 0.6 should trigger a chain_acknowledge_gap or a second-signal lookup."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Path to file or directory under /input",
+                    },
+                },
+                "required": ["path"],
+            },
+        ),
+        Tool(
+            name="magic_check",
+            description="Read first 16 bytes + size of a file. Quick signature probe.",
+            inputSchema={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        ),
     ]
 
 
@@ -239,6 +269,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=str(result))]
     if name == "win_lnk_parse":
         result = win.win_lnk_parse(arguments["lnk_path"])
+        return [TextContent(type="text", text=str(result))]
+    if name == "os_detect":
+        result = ps.os_detect(arguments["path"])
+        return [TextContent(type="text", text=str(result))]
+    if name == "magic_check":
+        result = ps.magic_check(arguments["path"])
         return [TextContent(type="text", text=str(result))]
     raise ValueError(f"Unknown tool: {name}")
 

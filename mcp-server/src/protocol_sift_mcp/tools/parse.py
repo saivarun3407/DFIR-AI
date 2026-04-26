@@ -1,4 +1,9 @@
-"""Common parsing primitives (stubs)."""
+"""Common parsing primitives + cross-OS detection.
+
+os_detect is the routing primitive used by triage-orchestrator. It must
+return a structured verdict that the orchestrator can use to dispatch the
+correct OS-specialist subagent without ambiguity.
+"""
 
 from __future__ import annotations
 
@@ -8,11 +13,235 @@ from typing import Any
 from ..sandbox import assert_input_path
 
 
-def magic_check(path: str) -> dict[str, str]:
-    """TODO(W1): libmagic-based file type identification + signature verification."""
+def magic_check(path: str) -> dict[str, Any]:
+    """Read first 16 bytes + file size for type fingerprinting."""
     p = assert_input_path(path)
     head = p.open("rb").read(16)
-    return {"head_hex": head.hex(), "size": str(p.stat().st_size)}
+    return {"path": str(p), "head_hex": head.hex(), "size": p.stat().st_size}
+
+
+# ─── OS Detection ────────────────────────────────────────────────────────────
+
+
+_WINDOWS_FILE_MAGIC: list[tuple[bytes, str, str]] = [
+    (b"regf", "regf", "windows registry hive"),
+    (b"SCCA", "SCCA", "windows prefetch (uncompressed)"),
+    (b"MAM\x04", "MAM", "windows prefetch (XPRESS-Huffman compressed, Win10+)"),
+    (b"ElfFile\x00", "ElfFile", "windows event log (.evtx)"),
+    (b"\xff\xfeM\x00", "MZ-utf16", "windows shortcut (.lnk header signature subset)"),
+    (b"L\x00\x00\x00\x01\x14\x02\x00", "LNK", "windows shortcut (.lnk)"),
+]
+
+
+_MACOS_FILE_MAGIC: list[tuple[bytes, str, str]] = [
+    (b"bplist00", "bplist00", "macOS binary plist"),
+    (b"\xcf\xfa\xed\xfe", "Mach-O 64 LE", "macOS Mach-O 64-bit"),
+    (b"\xfe\xed\xfa\xce", "Mach-O 32 BE", "macOS Mach-O 32-bit"),
+    (b"\xfe\xed\xfa\xcf", "Mach-O 64 BE", "macOS Mach-O 64-bit"),
+    (b"\xca\xfe\xba\xbe", "Mach-O Fat", "macOS universal binary"),
+]
+
+
+_LINUX_FILE_MAGIC: list[tuple[bytes, str, str]] = [
+    (b"\x7fELF", "ELF", "ELF executable / core dump"),
+    (b"hsqs", "squashfs", "squashfs filesystem"),
+    (b"EMiL", "EMiL", "LiME memory dump"),
+]
+
+
+_FS_OFFSET_MAGIC: list[tuple[int, bytes, str, str]] = [
+    (0x438, b"\x53\xef", "ext", "ext2/3/4 filesystem (offset 0x438)"),
+    (32, b"NXSB", "NXSB", "APFS container superblock (offset 32)"),
+    (1024, b"H+", "HFS+", "HFS+ filesystem (offset 1024)"),
+    (3, b"NTFS    ", "NTFS", "NTFS volume boot record"),
+]
+
+
+_DIR_MARKERS: list[tuple[str, str, str]] = [
+    ("Windows/System32", "windows", "presence of Windows/System32"),
+    ("Windows/Prefetch", "windows", "presence of Windows/Prefetch"),
+    ("System/Library/CoreServices", "macos", "presence of System/Library/CoreServices"),
+    ("Library/LaunchAgents", "macos", "presence of Library/LaunchAgents"),
+    ("etc/passwd", "linux", "presence of /etc/passwd"),
+    ("var/log/auth.log", "linux", "presence of /var/log/auth.log"),
+    ("etc/systemd/system", "linux", "presence of /etc/systemd/system"),
+]
+
+
+_OS_OF_FAMILY: dict[str, str] = {
+    "windows registry hive": "windows",
+    "windows prefetch (uncompressed)": "windows",
+    "windows prefetch (XPRESS-Huffman compressed, Win10+)": "windows",
+    "windows event log (.evtx)": "windows",
+    "windows shortcut (.lnk)": "windows",
+    "windows shortcut (.lnk header signature subset)": "windows",
+    "NTFS volume boot record": "windows",
+    "macOS binary plist": "macos",
+    "macOS Mach-O 32-bit": "macos",
+    "macOS Mach-O 64-bit": "macos",
+    "macOS universal binary": "macos",
+    "APFS container superblock (offset 32)": "macos",
+    "HFS+ filesystem (offset 1024)": "macos",
+    "ELF executable / core dump": "linux",
+    "squashfs filesystem": "linux",
+    "ext2/3/4 filesystem (offset 0x438)": "linux",
+    "LiME memory dump": "linux_or_memory",
+}
+
+
+def os_detect(path: str) -> dict[str, Any]:
+    """Identify which OS produced this evidence artifact.
+
+    Returns a structured verdict the triage-orchestrator can route on:
+
+        {
+          "os": "windows" | "macos" | "linux" | "memory_dump" | "unknown",
+          "confidence": 0.0–1.0,
+          "evidence_class": "registry" | "evtx" | "prefetch" | "lnk" | "plist"
+                          | "filesystem_image" | "memory_dump" | "directory"
+                          | "unknown",
+          "signals": [{"source": "...", "match": "...", "weight": float}, ...],
+          "is_directory": bool,
+          "size": int | None,
+        }
+
+    Confidence calculus:
+      - 1.0  → definitive magic match (e.g. regf, NXSB, ElfFile)
+      - 0.8  → 2 independent signals agree
+      - 0.6  → 1 magic signal
+      - 0.4  → directory marker only
+      - 0.0  → no signals
+    """
+    p = assert_input_path(path)
+    signals: list[dict[str, Any]] = []
+    size: int | None = None
+    is_dir = p.is_dir()
+
+    if is_dir:
+        for marker, os_name, desc in _DIR_MARKERS:
+            if (p / marker).exists():
+                signals.append({"source": "dir_marker", "match": desc, "os": os_name, "weight": 0.4})
+        os_votes = _tally(signals)
+        chosen, conf = _decide(os_votes, signals)
+        return {
+            "os": chosen,
+            "confidence": conf,
+            "evidence_class": "directory",
+            "signals": signals,
+            "is_directory": True,
+            "size": None,
+        }
+
+    size = p.stat().st_size
+    head = p.open("rb").read(64)
+
+    for magic, _, desc in _WINDOWS_FILE_MAGIC + _MACOS_FILE_MAGIC + _LINUX_FILE_MAGIC:
+        if head.startswith(magic):
+            signals.append(
+                {
+                    "source": "file_magic",
+                    "match": desc,
+                    "os": _OS_OF_FAMILY.get(desc, "unknown"),
+                    "weight": 1.0,
+                }
+            )
+            break
+
+    for offset, magic, _, desc in _FS_OFFSET_MAGIC:
+        if size > offset + len(magic):
+            with p.open("rb") as f:
+                f.seek(offset)
+                if f.read(len(magic)) == magic:
+                    signals.append(
+                        {
+                            "source": "fs_offset",
+                            "match": desc,
+                            "os": _OS_OF_FAMILY.get(desc, "unknown"),
+                            "weight": 1.0,
+                        }
+                    )
+                    break
+
+    if not signals:
+        ext = p.suffix.lower()
+        ext_map = {
+            ".evtx": ("windows", "evtx extension"),
+            ".pf": ("windows", "prefetch extension"),
+            ".lnk": ("windows", "shortcut extension"),
+            ".dat": ("windows", "registry hive extension (NTUSER.DAT etc)"),
+            ".plist": ("macos", "plist extension"),
+            ".tracev3": ("macos", "Unified Logs archive extension"),
+            ".dmp": ("memory_dump", "raw memory dump extension"),
+            ".vmem": ("memory_dump", "VMware memory snapshot extension"),
+            ".lime": ("linux", "LiME memory dump extension"),
+            ".aff": ("memory_dump", "Advanced Forensic Format"),
+            ".e01": ("filesystem_image", "EnCase image format"),
+        }
+        if ext in ext_map:
+            os_name, desc = ext_map[ext]
+            signals.append({"source": "extension", "match": desc, "os": os_name, "weight": 0.5})
+
+    chosen, conf = _decide(_tally(signals), signals)
+    evidence_class = _classify_evidence(signals)
+
+    return {
+        "os": chosen,
+        "confidence": conf,
+        "evidence_class": evidence_class,
+        "signals": signals,
+        "is_directory": False,
+        "size": size,
+    }
+
+
+def _tally(signals: list[dict[str, Any]]) -> dict[str, float]:
+    votes: dict[str, float] = {}
+    for s in signals:
+        os_name = s.get("os", "unknown")
+        votes[os_name] = votes.get(os_name, 0.0) + float(s["weight"])
+    return votes
+
+
+def _decide(votes: dict[str, float], signals: list[dict[str, Any]]) -> tuple[str, float]:
+    if not votes:
+        return "unknown", 0.0
+    chosen = max(votes.items(), key=lambda kv: kv[1])
+    name, score = chosen
+    if name == "unknown":
+        return "unknown", 0.0
+    if name == "linux_or_memory":
+        return "linux", min(score, 0.8)
+    independent = {s["source"] for s in signals if s.get("os") == name}
+    if len(independent) >= 2:
+        return name, min(1.0, 0.8 + 0.2 * (len(independent) - 2))
+    if score >= 1.0:
+        return name, min(1.0, 0.6 + 0.4 * (score - 1.0) / max(score, 1.0))
+    return name, min(score, 0.6)
+
+
+def _classify_evidence(signals: list[dict[str, Any]]) -> str:
+    matches = [s["match"] for s in signals]
+    text = " ".join(matches).lower()
+    if "registry" in text:
+        return "registry"
+    if "event log" in text or ".evtx" in text:
+        return "evtx"
+    if "prefetch" in text:
+        return "prefetch"
+    if "shortcut" in text or ".lnk" in text:
+        return "lnk"
+    if "plist" in text:
+        return "plist"
+    if "memory" in text or "core dump" in text:
+        return "memory_dump"
+    if "filesystem" in text or "ntfs" in text or "apfs" in text or "hfs" in text:
+        return "filesystem_image"
+    if not signals:
+        return "unknown"
+    return "unknown"
+
+
+# ─── Other parse primitives ──────────────────────────────────────────────────
 
 
 def hex_inspect(path: str, offset: int, length: int) -> str:
