@@ -1,0 +1,17 @@
+name: License Check
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  detect-license:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify LICENSE at repo root (Apache-2.0)
+        run: |
+          test -f LICENSE
+          head -1 LICENSE | grep -qi 'Apache License'
+          grep -q 'Version 2.0' LICENSE
+          echo "LICENSE present and identifies as Apache 2.0"

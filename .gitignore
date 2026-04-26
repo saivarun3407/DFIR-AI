@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.local
+*.pem
+*.key
+!ed25519.pub
+secrets/
+
+# Evidence (NEVER commit case data)
+/input/
+/output/
+corpus/**/*.dmp
+corpus/**/*.vmem
+corpus/**/*.img
+corpus/**/*.E01
+corpus/**/*.aff
+corpus/**/*.lime
+
+# Run artifacts
+agent.log.jsonl
+findings.json
+narrative.md
+accuracy-report.md
+chain-of-custody.jsonl
+*.attestation.json
+
+# Allow corpus README + ground-truth
+!corpus/README.md
+!corpus/**/ground-truth.json
+
+# Build outputs
+*.log
+.cache/

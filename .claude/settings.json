@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings",
+  "permissions": {
+    "allow": [
+      "mcp__protocol_sift__*",
+      "Read",
+      "Glob",
+      "Grep"
+    ],
+    "deny": [
+      "Bash",
+      "WebFetch",
+      "WebSearch",
+      "Edit",
+      "Write",
+      "mcp__filesystem__write_*"
+    ]
+  },
+  "mcpServers": {
+    "protocol_sift": {
+      "command": "python3.11",
+      "args": ["-m", "protocol_sift_mcp.server"],
+      "env": {
+        "EVIDENCE_PATH": "${EVIDENCE_PATH}",
+        "OUTPUT_PATH": "/output",
+        "CASE_ID": "${CASE_ID}"
+      }
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/session-start.sh"}
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/inject-context.sh"}
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/guard.sh"}
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/audit.sh"}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/finalize.sh"}
+        ]
+      }
+    ]
+  }
+}

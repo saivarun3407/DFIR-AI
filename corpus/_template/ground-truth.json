@@ -1,0 +1,18 @@
+{
+  "case_id": "TEMPLATE",
+  "description": "Replace this template with real ground-truth data when adding a case.",
+  "source_url": "https://...",
+  "evidence_hashes": [
+    {"path": "memory.dmp", "sha256": "..."}
+  ],
+  "expected_findings": [
+    {
+      "ground_truth_id": "GT-001",
+      "claim": "...",
+      "evidence_hint": "...",
+      "mitre_attck": ["T1055"],
+      "confidence_floor": "inferred"
+    }
+  ],
+  "expected_hallucinations": 0
+}

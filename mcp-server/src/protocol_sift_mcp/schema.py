@@ -1,0 +1,91 @@
+"""Typed schemas for findings, pins, chain entries, and attestations."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from enum import Enum
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, field_validator
+
+
+class Confidence(str, Enum):
+    CONFIRMED = "confirmed"
+    INFERRED = "inferred"
+    UNCERTAIN = "uncertain"
+    UNKNOWN = "unknown"
+
+
+class LocatorType(str, Enum):
+    REGISTRY_PATH = "registry_path"
+    FILE_OFFSET = "file_offset"
+    SQL_ROW = "sql_row"
+    LOG_LINE = "log_line"
+    MEMORY_VAD = "memory_vad"
+    EVTX_RECORD_ID = "evtx_record_id"
+    PLIST_KEY = "plist_key"
+    JOURNAL_CURSOR = "journal_cursor"
+    AUDIT_MSG_ID = "audit_msg_id"
+
+
+class Locator(BaseModel):
+    type: LocatorType
+    value: str = Field(min_length=1)
+
+
+class Pin(BaseModel):
+    artifact: str = Field(min_length=1)
+    tool: str = Field(min_length=1)
+    locator: Locator
+    raw_excerpt: str = Field(min_length=1, description="Hex, base64, or short text snippet of underlying bytes")
+    captured_at: datetime
+
+
+class Finding(BaseModel):
+    finding_id: str = Field(min_length=1)
+    claim: str = Field(min_length=1)
+    confidence: Confidence
+    pins: list[Pin] = Field(min_length=1)
+    mitre_attck: list[str] = Field(default_factory=list)
+    related_findings: list[str] = Field(default_factory=list)
+
+    @field_validator("pins")
+    @classmethod
+    def at_least_one_pin(cls, v: list[Pin]) -> list[Pin]:
+        if len(v) < 1:
+            raise ValueError("Finding requires at least one pin (use chain_acknowledge_gap to refuse instead)")
+        return v
+
+
+ChainEvent = Literal[
+    "chain_init",
+    "evidence_ingest",
+    "tool_call",
+    "finding_recorded",
+    "verifier_result",
+    "self_correction",
+    "gap_acknowledged",
+    "tool_failure",
+    "chain_finalize",
+]
+
+
+class ChainEntry(BaseModel):
+    seq: int = Field(ge=0)
+    prev_hash: str
+    ts: datetime
+    event: ChainEvent
+    data: dict[str, Any]
+    hash: str = Field(min_length=64, max_length=64, description="sha256 hex of seq||prev_hash||ts||event||canonical_data")
+
+
+class Attestation(BaseModel):
+    type_: str = Field(default="https://in-toto.io/Statement/v1", alias="_type")
+    subject: list[dict[str, Any]]
+    predicate_type: str = Field(
+        default="https://memoryhound.dev/finding-attestation/v1",
+        alias="predicateType",
+    )
+    predicate: dict[str, Any]
+
+    model_config = {"populate_by_name": True}

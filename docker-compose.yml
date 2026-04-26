@@ -1,0 +1,25 @@
+services:
+  memoryhound:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: memoryhound:dev
+    container_name: memoryhound
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - CASE_ID=${CASE_ID:-demo-001}
+    volumes:
+      - ./input:/input:ro
+      - ./output:/output:rw
+      - ./corpus:/corpus:ro
+      - ./.claude:/workspace/.claude:ro
+      - ./mcp-server:/workspace/mcp-server:ro
+    working_dir: /workspace
+    network_mode: none
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
