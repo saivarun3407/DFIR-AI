@@ -93,3 +93,34 @@ class Attestation(BaseModel):
     predicate: dict[str, Any]
 
     model_config = {"populate_by_name": True}
+
+
+class RegistryValueType(StrEnum):
+    REG_NONE = "REG_NONE"
+    REG_SZ = "REG_SZ"
+    REG_EXPAND_SZ = "REG_EXPAND_SZ"
+    REG_BINARY = "REG_BINARY"
+    REG_DWORD = "REG_DWORD"
+    REG_DWORD_BIG_ENDIAN = "REG_DWORD_BIG_ENDIAN"
+    REG_LINK = "REG_LINK"
+    REG_MULTI_SZ = "REG_MULTI_SZ"
+    REG_RESOURCE_LIST = "REG_RESOURCE_LIST"
+    REG_FULL_RESOURCE_DESCRIPTOR = "REG_FULL_RESOURCE_DESCRIPTOR"
+    REG_RESOURCE_REQUIREMENTS_LIST = "REG_RESOURCE_REQUIREMENTS_LIST"
+    REG_QWORD = "REG_QWORD"
+    UNKNOWN = "UNKNOWN"
+
+
+class RegistryValue(BaseModel):
+    name: str
+    value_type: RegistryValueType
+    value: Any = None
+    raw_hex: str = Field(default="", description="Hex of underlying cell bytes for evidence pinning")
+
+
+class RegistryKey(BaseModel):
+    path: str
+    timestamp: datetime | None = None
+    subkeys: list[str] = Field(default_factory=list)
+    values: list[RegistryValue] = Field(default_factory=list)
+    hive_type: str | None = None

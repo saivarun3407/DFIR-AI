@@ -17,6 +17,7 @@ from mcp.types import TextContent, Tool
 
 from .tools import evidence as ev
 from .tools import finding as fd
+from .tools import windows as win
 
 OUTPUT_PATH = Path(os.environ.get("OUTPUT_PATH", "/output"))
 CHAIN_PATH = OUTPUT_PATH / "chain-of-custody.jsonl"
@@ -85,6 +86,29 @@ async def list_tools() -> list[Tool]:
                 "required": ["finding_id", "claim", "confidence", "pins"],
             },
         ),
+        Tool(
+            name="win_registry_get",
+            description=(
+                "Read a Windows registry key from a hive (NTUSER.DAT, SOFTWARE, SYSTEM, "
+                "SAM, USRCLASS.DAT). Returns {path, timestamp, hive_type, subkeys, values}. "
+                "Each value includes raw_hex for evidence pinning. Empty registry_path = root."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "hive_path": {"type": "string", "description": "Path to hive under /input"},
+                    "registry_path": {
+                        "type": "string",
+                        "description": (
+                            "Backslash path under hive root, "
+                            "e.g. Software\\\\Microsoft\\\\Windows"
+                        ),
+                        "default": "",
+                    },
+                },
+                "required": ["hive_path"],
+            },
+        ),
     ]
 
 
@@ -127,6 +151,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             data={"finding_id": record["finding_id"]},
         )
         return [TextContent(type="text", text=str(record))]
+    if name == "win_registry_get":
+        result = win.win_registry_get(
+            arguments["hive_path"],
+            arguments.get("registry_path", ""),
+        )
+        return [TextContent(type="text", text=str(result))]
     raise ValueError(f"Unknown tool: {name}")
 
 
