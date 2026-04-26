@@ -16,7 +16,7 @@ WORKDIR /workspace
 
 COPY mcp-server/pyproject.toml mcp-server/pyproject.toml
 COPY mcp-server/src mcp-server/src
-RUN uv pip install --system --no-cache ./mcp-server
+RUN uv pip install --system --no-cache "./mcp-server[forensics]"
 
 RUN useradd -u 1000 -m hound && \
     mkdir -p /input /output /corpus && \

@@ -15,9 +15,9 @@ if ! command -v uv >/dev/null 2>&1; then
     python3.11 -m pip install --user uv
 fi
 
-echo ">> Installing protocol-sift-mcp"
+echo ">> Installing protocol-sift-mcp (core + dev + forensics)"
 cd "$(dirname "$0")/../mcp-server"
-uv pip install --system -e ".[dev]"
+uv pip install --system -e ".[dev,forensics]"
 
 echo ">> Generating ed25519 signing keypair (if missing)"
 KEYS_DIR="$(cd "$(dirname "$0")/.." && pwd)/keys"
