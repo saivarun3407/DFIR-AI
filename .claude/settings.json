@@ -18,12 +18,13 @@
   },
   "mcpServers": {
     "protocol_sift": {
-      "command": "python3.11",
-      "args": ["-m", "protocol_sift_mcp.server"],
+      "command": "${CLAUDE_PROJECT_DIR}/bin/mh-mcp-server",
+      "args": [],
       "env": {
         "EVIDENCE_PATH": "${EVIDENCE_PATH}",
-        "OUTPUT_PATH": "/output",
-        "CASE_ID": "${CASE_ID}"
+        "OUTPUT_PATH": "${OUTPUT_PATH}",
+        "CASE_ID": "${CASE_ID}",
+        "MH_HOME": "${CLAUDE_PROJECT_DIR}"
       }
     }
   },

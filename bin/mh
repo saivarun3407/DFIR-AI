@@ -1,0 +1,491 @@
+#!/usr/bin/env bash
+# MemoryHound CLI — install, run, verify autonomous DFIR triage cases.
+#
+# Subcommands:
+#   mh doctor              health check — Python, Claude Code, deps, keys, perms
+#   mh init                first-time setup — venv, deps, signing keys
+#   mh run    <case-id>    run Claude Code triage on cases/<case-id>/input/
+#   mh verify <case-id>    verify chain + signature for a completed case
+#   mh status              recent cases + their phase
+#   mh tools               list MCP tools the agent can call
+#   mh check               quick env probe (subset of doctor, exit code)
+#
+# Works with both Claude subscription (claude /login) and ANTHROPIC_API_KEY.
+set -euo pipefail
+
+MH_HOME="${MH_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+MH_VENV="${MH_VENV:-${MH_HOME}/.venv}"
+MH_PY="${MH_VENV}/bin/python"
+MH_KEYS_DIR="${MH_HOME}/keys"
+MH_CASES_DIR="${MH_HOME}/cases"
+
+GREEN="\033[0;32m"
+RED="\033[0;31m"
+YELLOW="\033[0;33m"
+BOLD="\033[1m"
+NC="\033[0m"
+
+ok()     { echo -e "${GREEN}✓${NC} $*"; }
+warn()   { echo -e "${YELLOW}!${NC} $*"; }
+fail()   { echo -e "${RED}✗${NC} $*"; }
+info()   { echo -e "${BOLD}»${NC} $*"; }
+
+# ─── doctor ──────────────────────────────────────────────────────────────────
+
+cmd_doctor() {
+    local errors=0
+    info "MemoryHound doctor — checking environment"
+    echo ""
+
+    if command -v python3.13 >/dev/null 2>&1; then
+        ok "Python 3.13 available: $(command -v python3.13)"
+    elif command -v python3.12 >/dev/null 2>&1; then
+        ok "Python 3.12 available: $(command -v python3.12)"
+    elif command -v python3.11 >/dev/null 2>&1; then
+        ok "Python 3.11 available: $(command -v python3.11)"
+    else
+        fail "No Python 3.11+ found. Install: brew install python@3.12 (macOS) or apt install python3.12 (Ubuntu)"
+        errors=$((errors + 1))
+    fi
+
+    if [[ -x "$MH_PY" ]]; then
+        ok "venv at $MH_VENV ($("$MH_PY" --version 2>&1))"
+    else
+        warn "venv not yet created — run: mh init"
+    fi
+
+    if [[ -x "$MH_PY" ]]; then
+        if "$MH_PY" -c "import protocol_sift_mcp" 2>/dev/null; then
+            ok "protocol_sift_mcp installed in venv"
+        else
+            warn "protocol_sift_mcp not installed — run: mh init"
+        fi
+        if "$MH_PY" -c "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey" 2>/dev/null; then
+            ok "cryptography (signing) ready"
+        else
+            warn "cryptography missing — run: mh init"
+        fi
+        if "$MH_PY" -c "import Registry, Evtx, pylnk3, windowsprefetch" 2>/dev/null; then
+            ok "Windows forensic libs ready (Registry, Evtx, pylnk3, windowsprefetch)"
+        else
+            warn "Windows forensic libs missing — run: mh init --with-forensics (optional, only needed for real evidence)"
+        fi
+    fi
+
+    if command -v claude >/dev/null 2>&1; then
+        ok "Claude Code installed: $(command -v claude)"
+        if claude --version 2>/dev/null | head -1; then :; fi
+    else
+        fail "Claude Code not installed. Install: https://docs.claude.com/en/docs/claude-code/quickstart"
+        errors=$((errors + 1))
+    fi
+
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+        ok "ANTHROPIC_API_KEY set (auth mode: API key)"
+    elif [[ -d "$HOME/.claude" ]]; then
+        ok "~/.claude/ exists (auth mode: Pro/Max login likely active — run 'claude /status' to confirm)"
+    else
+        warn "No ANTHROPIC_API_KEY env var and no ~/.claude/ — auth not configured"
+        warn "    EITHER  export ANTHROPIC_API_KEY=sk-ant-...   OR   claude /login"
+    fi
+
+    if [[ -f "${MH_KEYS_DIR}/ed25519.priv" ]]; then
+        ok "Signing keypair exists at ${MH_KEYS_DIR}/"
+        if [[ "$(stat -f '%p' "${MH_KEYS_DIR}/ed25519.priv" 2>/dev/null || stat -c '%a' "${MH_KEYS_DIR}/ed25519.priv" 2>/dev/null)" =~ 600$ ]]; then
+            ok "    private key permissions are 0600"
+        else
+            warn "    private key NOT 0600 — run: chmod 600 ${MH_KEYS_DIR}/ed25519.priv"
+        fi
+    else
+        warn "No signing keypair — run: mh init"
+    fi
+
+    if [[ -f "${MH_HOME}/.claude/settings.json" ]]; then
+        ok ".claude/settings.json present (Claude Code will pick up MCP + hooks here)"
+    else
+        fail ".claude/settings.json missing — repo seems incomplete"
+        errors=$((errors + 1))
+    fi
+
+    if [[ -x "${MH_HOME}/bin/mh-mcp-server" ]]; then
+        ok "MCP server launcher executable"
+    else
+        warn "bin/mh-mcp-server not executable — run: chmod +x bin/mh-mcp-server"
+    fi
+
+    echo ""
+    if [[ $errors -eq 0 ]]; then
+        ok "All critical checks passed."
+        info "Next: drop evidence into cases/<id>/input/, then 'mh run <id>'"
+        return 0
+    else
+        fail "$errors critical issue(s). Fix above before running cases."
+        return 1
+    fi
+}
+
+# ─── init ────────────────────────────────────────────────────────────────────
+
+cmd_init() {
+    local with_forensics=0
+    for arg in "$@"; do
+        case "$arg" in
+            --with-forensics) with_forensics=1 ;;
+            -h|--help) echo "Usage: mh init [--with-forensics]"; return 0 ;;
+        esac
+    done
+
+    info "MemoryHound init — creating venv + installing deps"
+
+    local PY=""
+    for cand in python3.13 python3.12 python3.11; do
+        if command -v "$cand" >/dev/null 2>&1; then
+            PY="$cand"; break
+        fi
+    done
+    if [[ -z "$PY" ]]; then
+        fail "Python 3.11+ required. Install with brew or apt."
+        return 1
+    fi
+    info "Using $PY ($(command -v "$PY"))"
+
+    if [[ ! -x "$MH_PY" ]]; then
+        info "Creating venv at $MH_VENV"
+        "$PY" -m venv "$MH_VENV"
+    fi
+
+    info "Installing protocol_sift_mcp (core + dev)"
+    "$MH_PY" -m pip install --quiet --upgrade pip
+    "$MH_PY" -m pip install --quiet -e "${MH_HOME}/mcp-server[dev]"
+
+    if [[ $with_forensics -eq 1 ]]; then
+        info "Installing forensics extras (heavy: volatility3, python-evtx, etc)"
+        "$MH_PY" -m pip install --quiet -e "${MH_HOME}/mcp-server[dev,forensics]"
+    fi
+
+    if [[ ! -f "${MH_KEYS_DIR}/ed25519.priv" ]]; then
+        info "Generating ed25519 signing keypair"
+        mkdir -p "$MH_KEYS_DIR"
+        "$MH_PY" -m protocol_sift_mcp.tools.evidence keygen --out-dir "$MH_KEYS_DIR"
+        chmod 600 "${MH_KEYS_DIR}/ed25519.priv"
+        ok "Keypair at ${MH_KEYS_DIR}/"
+    else
+        ok "Keypair already exists at ${MH_KEYS_DIR}/"
+    fi
+
+    chmod +x "${MH_HOME}"/bin/mh "${MH_HOME}"/bin/mh-mcp-server "${MH_HOME}"/.claude/hooks/*.sh 2>/dev/null || true
+
+    mkdir -p "$MH_CASES_DIR"
+
+    info "Running test suite to verify install"
+    if PYTHONPATH="${MH_HOME}/mcp-server/src" "$MH_PY" -m pytest "${MH_HOME}/mcp-server/tests" -q --no-cov 2>&1 | tail -5; then
+        ok "Tests passing"
+    else
+        warn "Tests did not all pass — check above"
+    fi
+
+    echo ""
+    ok "Init complete."
+    info "Next: 'mh doctor' to confirm full env, then 'mh run <case-id>'"
+}
+
+# ─── run ─────────────────────────────────────────────────────────────────────
+
+cmd_run() {
+    local case_id="${1:-}"
+    if [[ -z "$case_id" ]]; then
+        fail "Usage: mh run <case-id>"
+        echo "       Evidence must live at cases/<case-id>/input/"
+        return 2
+    fi
+
+    local case_dir="${MH_CASES_DIR}/${case_id}"
+    local input_dir="${case_dir}/input"
+    local output_dir="${case_dir}/output"
+
+    if [[ ! -d "$input_dir" ]]; then
+        fail "No evidence at ${input_dir}"
+        info "Drop files into ${input_dir}/ then re-run."
+        return 2
+    fi
+
+    if [[ -z "$(ls -A "$input_dir" 2>/dev/null)" ]]; then
+        warn "${input_dir} is empty"
+        return 2
+    fi
+
+    mkdir -p "$output_dir"
+
+    if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ ! -d "$HOME/.claude" ]]; then
+        fail "No Claude auth. Set ANTHROPIC_API_KEY or run: claude /login"
+        return 1
+    fi
+
+    if ! command -v claude >/dev/null 2>&1; then
+        fail "claude CLI not installed"
+        return 1
+    fi
+
+    info "Case: ${case_id}"
+    info "Evidence: ${input_dir}"
+    info "Output:   ${output_dir}"
+    if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+        info "Auth: API key"
+    else
+        info "Auth: Claude subscription (Pro/Max)"
+    fi
+
+    export CASE_ID="$case_id"
+    export EVIDENCE_PATH="$input_dir"
+    export OUTPUT_PATH="$output_dir"
+    export MH_HOME
+
+    info "Launching Claude Code with triage-orchestrator skill"
+    cd "$MH_HOME"
+    claude "Use the triage-orchestrator skill to autonomously triage every artifact under ${input_dir}. Route to the correct OS specialist. Pin every finding. Acknowledge gaps explicitly. Stop when triage is complete."
+}
+
+# ─── verify ──────────────────────────────────────────────────────────────────
+
+cmd_verify() {
+    local case_id="${1:-}"
+    if [[ -z "$case_id" ]]; then
+        fail "Usage: mh verify <case-id>"
+        return 2
+    fi
+
+    local output_dir="${MH_CASES_DIR}/${case_id}/output"
+    local chain="${output_dir}/chain-of-custody.jsonl"
+    local findings="${output_dir}/findings.json"
+    local attestation="${output_dir}/case-${case_id}.attestation.json"
+
+    if [[ ! -f "$chain" ]]; then
+        fail "No chain log at ${chain}"
+        return 1
+    fi
+
+    info "Verifying chain of custody"
+    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain"; then
+        ok "Chain valid"
+    else
+        fail "Chain INVALID — tampering detected"
+        return 1
+    fi
+
+    if [[ -f "$findings" ]]; then
+        local count
+        count=$("$MH_PY" -c "import json; print(len(json.load(open('$findings'))))")
+        ok "${count} finding(s) recorded"
+    fi
+
+    if [[ -f "$attestation" ]]; then
+        ok "Signed attestation present at ${attestation}"
+        info "Verify signature with: mh-verify-attestation ${attestation} keys/ed25519.pub"
+    else
+        warn "No attestation file (case may not have completed)"
+    fi
+}
+
+# ─── status ──────────────────────────────────────────────────────────────────
+
+cmd_status() {
+    if [[ ! -d "$MH_CASES_DIR" ]]; then
+        info "No cases yet. mh run <id> creates one."
+        return 0
+    fi
+
+    info "Cases:"
+    for case_dir in "$MH_CASES_DIR"/*/; do
+        [[ ! -d "$case_dir" ]] && continue
+        local id
+        id=$(basename "$case_dir")
+        local phase="empty"
+        if [[ -f "${case_dir}/output/case-${id}.attestation.json" ]]; then
+            phase="${GREEN}signed${NC}"
+        elif [[ -f "${case_dir}/output/findings.json" ]]; then
+            phase="${YELLOW}finished (unsigned)${NC}"
+        elif [[ -f "${case_dir}/output/chain-of-custody.jsonl" ]]; then
+            phase="${YELLOW}in-progress${NC}"
+        elif [[ -d "${case_dir}/input" ]] && [[ -n "$(ls -A "${case_dir}/input" 2>/dev/null)" ]]; then
+            phase="staged"
+        fi
+        echo -e "  ${id}  →  ${phase}"
+    done
+}
+
+# ─── tools ───────────────────────────────────────────────────────────────────
+
+cmd_tools() {
+    info "MCP tools exposed by protocol_sift:"
+    cat <<'EOF'
+  Trust stack:
+    hash                       — sha256 + sha1 + size
+    chain_append               — append to hash-chained audit log
+    chain_verify               — recompute chain, detect tampering
+    chain_acknowledge_gap      — explicit "I don't know" entry
+    finding_record             — register finding (rejects un-pinned)
+
+  Cross-OS routing:
+    os_detect                  — magic-byte + dir-marker OS classification
+    magic_check                — first-16-bytes signature probe
+
+  Windows triage:
+    win_registry_get           — read registry key (NTUSER, SOFTWARE, etc)
+    win_prefetch_parse         — parse .pf for execution proof
+    win_evtx_query             — filter EVTX by EID + time range
+    win_lnk_parse              — parse .lnk for target + drive_serial
+
+  macOS triage (W3 stub):
+    mac_apfs_inspect, mac_plist_get, mac_tracev3_query,
+    mac_knowledgec_query, mac_spotlight_query
+
+  Linux triage (W4 stub):
+    linux_journal_query, linux_audit_query, linux_history_parse,
+    linux_systemd_units, linux_cron_parse
+
+  Memory (W2-W4 stub):
+    memory_volatility          — Volatility 3 plugin invocation
+EOF
+}
+
+# ─── check (quick env probe with exit code) ─────────────────────────────────
+
+cmd_check() {
+    if cmd_doctor >/dev/null 2>&1; then
+        ok "OK"
+        return 0
+    else
+        fail "FAIL — run 'mh doctor' for details"
+        return 1
+    fi
+}
+
+# ─── demo ────────────────────────────────────────────────────────────────────
+
+cmd_demo() {
+    info "MemoryHound trust-chain demo (no real evidence + no Claude tokens needed)"
+    echo ""
+
+    local demo_dir="${MH_HOME}/cases/_demo"
+    rm -rf "$demo_dir"
+    mkdir -p "${demo_dir}/input" "${demo_dir}/output"
+    echo "fake evidence — pretend this is a memory dump" > "${demo_dir}/input/sample.bin"
+    echo "fake regf hive bytes" > "${demo_dir}/input/NTUSER.DAT"
+
+    local chain="${demo_dir}/output/chain.jsonl"
+
+    info "Step 1: chain_init (genesis entry)"
+    "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_init \
+        --output "$chain" \
+        --case-id "demo" \
+        --evidence-path "${demo_dir}/input" \
+        --agent-version "memoryhound@0.1.0" \
+        --model "claude-opus-4-7" >/dev/null
+    ok "    chain.jsonl created"
+
+    info "Step 2: ingest each artifact (computes sha256+sha1, appends entry)"
+    export EVIDENCE_PATH="${demo_dir}/input"
+    export OUTPUT_PATH="${demo_dir}/output"
+    for f in "${demo_dir}/input"/*; do
+        "$MH_PY" -m protocol_sift_mcp.tools.evidence ingest --chain "$chain" --artifact "$f" >/dev/null
+        ok "    ingested $(basename "$f")"
+    done
+
+    info "Step 3: simulate 3 tool calls (what hooks log automatically during agent run)"
+    for i in 1 2 3; do
+        "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_append \
+            --chain "$chain" \
+            --event "tool_call" \
+            --data "{\"tool\":\"win_registry_get\",\"args\":{\"i\":$i},\"result_hash\":\"abc\"}" >/dev/null
+    done
+    ok "    3 tool_call entries appended"
+
+    info "Step 4: verify chain — should be VALID"
+    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain"; then
+        ok "    chain valid as expected"
+    fi
+
+    info "Step 5: tamper one entry (change a tool argument)"
+    cp "$chain" "${chain}.bak"
+    sed -i.tmp 's/"i":2/"i":999/' "$chain"
+    rm -f "${chain}.tmp"
+    ok "    tampered seq=4 (changed i=2 to i=999)"
+
+    info "Step 6: re-verify — should DETECT tamper"
+    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain"; then
+        fail "    chain reported valid AFTER tamper — this is a bug"
+        return 1
+    else
+        ok "    chain INVALID — tamper detected"
+    fi
+
+    info "Step 7: restore + verify green again"
+    mv "${chain}.bak" "$chain"
+    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain"; then
+        ok "    chain valid again after restore"
+    fi
+
+    echo ""
+    ok "Demo complete. Trust stack works."
+    info "Demo artifacts: ${demo_dir}/output/"
+}
+
+# ─── help ────────────────────────────────────────────────────────────────────
+
+cmd_help() {
+    cat <<EOF
+${BOLD}MemoryHound — autonomous DFIR triage with Claude Code${NC}
+
+${BOLD}USAGE${NC}
+    mh <command> [args]
+
+${BOLD}COMMANDS${NC}
+    init [--with-forensics]   First-time setup: venv, deps, ed25519 keys.
+                              --with-forensics adds heavy libs (Volatility, etc.)
+    doctor                    Health check across env, deps, auth, keys.
+    demo                      Trust-chain showcase — no real evidence, no Claude tokens.
+    run <case-id>             Run Claude Code triage on cases/<id>/input/.
+    verify <case-id>          Verify chain-of-custody integrity for a case.
+    status                    List cases + their phase.
+    tools                     List MCP tools the agent can call.
+    check                     Quick env probe (exit 0/1).
+    help                      Show this.
+
+${BOLD}WORKFLOW${NC}
+    1. mh init                                    # one-time setup
+    2. claude /login   OR   export ANTHROPIC_API_KEY=sk-ant-...
+    3. mkdir -p cases/case-001/input
+       cp /path/to/evidence/* cases/case-001/input/
+    4. mh run case-001                            # autonomous triage
+    5. mh verify case-001                         # validate chain + signature
+
+${BOLD}DOCS${NC}
+    docs/architecture.md      — full design
+    docs/usage.md             — detailed usage
+    docs/development.md       — pre-commit + CI workflow
+
+${BOLD}HOMEPAGE${NC}
+    https://github.com/saivarun3407/DFIR-AI
+EOF
+}
+
+# ─── dispatch ────────────────────────────────────────────────────────────────
+
+main() {
+    local cmd="${1:-help}"
+    shift || true
+    case "$cmd" in
+        init)    cmd_init "$@" ;;
+        doctor)  cmd_doctor "$@" ;;
+        demo)    cmd_demo "$@" ;;
+        run)     cmd_run "$@" ;;
+        verify)  cmd_verify "$@" ;;
+        status)  cmd_status "$@" ;;
+        tools)   cmd_tools "$@" ;;
+        check)   cmd_check "$@" ;;
+        help|-h|--help) cmd_help ;;
+        *)       fail "Unknown command: $cmd"; cmd_help; return 2 ;;
+    esac
+}
+
+main "$@"

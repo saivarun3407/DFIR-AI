@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Portable MCP server launcher.
+#
+# Claude Code spawns this from .claude/settings.json. We resolve the venv
+# Python relative to the project dir so the server runs even if the user's
+# shell has a different default Python on PATH.
+set -euo pipefail
+
+MH_HOME="${MH_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+MH_PY="${MH_HOME}/.venv/bin/python"
+
+if [[ ! -x "$MH_PY" ]]; then
+    echo "MemoryHound venv missing at ${MH_PY}. Run: mh init" >&2
+    exit 1
+fi
+
+exec "$MH_PY" -m protocol_sift_mcp.server "$@"

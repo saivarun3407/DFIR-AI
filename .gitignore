@@ -34,18 +34,25 @@ Thumbs.db
 .env.local
 *.pem
 *.key
-!ed25519.pub
+keys/*.priv
+keys/*.pub
 secrets/
 
 # Evidence (NEVER commit case data)
 /input/
 /output/
+cases/*/input/
+cases/*/output/
 corpus/**/*.dmp
 corpus/**/*.vmem
 corpus/**/*.img
 corpus/**/*.E01
 corpus/**/*.aff
 corpus/**/*.lime
+!cases/_demo/
+
+# Local venv
+.venv/
 
 # Run artifacts
 agent.log.jsonl
