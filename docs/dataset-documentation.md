@@ -48,13 +48,17 @@ corpus/
 │   ├── ground-truth.json
 │   └── README.md
 ├── dfrws-2008-memory/
-│   ├── memory.dmp                  (gitignored — fetch via download.sh)
+│   ├── memory.dmp                  (gitignored — drop your own copy)
 │   ├── ground-truth.json
 │   └── README.md
 ├── volatility-cridex/
 ├── volatility-zeus/
 ├── nist-hacking-case/
 └── clean-001/
+
+# Local-only policy: nothing in this repo downloads evidence at runtime.
+# Drop your own evidence into cases/<id>/input/ or run `mh self-collect`
+# to populate from the host machine.
 ```
 
 ## ground-truth.json Schema
