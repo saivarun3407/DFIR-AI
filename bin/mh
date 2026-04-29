@@ -370,9 +370,22 @@ cmd_self_collect() {
 # ─── demo ────────────────────────────────────────────────────────────────────
 
 cmd_demo() {
-    info "MemoryHound real-data demo — collects safe artifacts from THIS host,"
-    info "runs them through MemoryHound's tools, proves chain tamper-detection."
-    info "No network, no Claude tokens. All read-only on host."
+    local autonomous=0
+    for arg in "$@"; do
+        case "$arg" in
+            --autonomous|--auto) autonomous=1 ;;
+            -h|--help) echo "Usage: mh demo [--autonomous]"; return 0 ;;
+        esac
+    done
+
+    if [[ $autonomous -eq 1 ]]; then
+        info "MemoryHound autonomous demo — self-collect + Claude Code triage."
+        info "Costs tokens. Needs claude /login OR ANTHROPIC_API_KEY."
+    else
+        info "MemoryHound real-data demo — collects safe artifacts from THIS host,"
+        info "runs them through MemoryHound's tools, proves chain tamper-detection."
+        info "No network, no Claude tokens. All read-only on host."
+    fi
     echo ""
 
     local demo_dir="${MH_CASES_DIR}/_demo"
@@ -471,7 +484,7 @@ print(json.dumps(out))
     fi
 
     echo ""
-    ok "Demo complete."
+    ok "Local demo complete."
     echo ""
     info "What just happened:"
     echo "    1. Collected $ingested real DFIR artifacts from your Mac (read-only)"
@@ -484,6 +497,65 @@ print(json.dumps(out))
     info "Artifacts saved to:"
     echo "    ${demo_dir}/input/    — read-only host artifact copies"
     echo "    ${demo_dir}/output/chain.jsonl  — the audit log (tamper-evident)"
+
+    if [[ $autonomous -eq 1 ]]; then
+        echo ""
+        info "════ AUTONOMOUS PHASE ═══════════════════════════════════════"
+        info "Now spawning Claude Code with triage-orchestrator skill."
+        info "Claude will autonomously call os_detect + mac_plist_get on each"
+        info "artifact, pin every finding, and produce a signed report."
+        echo ""
+
+        if [[ -z "${ANTHROPIC_API_KEY:-}" ]] && [[ ! -d "$HOME/.claude" ]]; then
+            fail "No Claude auth configured. Run one of:"
+            echo "    claude /login                          # Pro/Max subscription"
+            echo "    export ANTHROPIC_API_KEY=sk-ant-...    # API key"
+            return 1
+        fi
+
+        if ! command -v claude >/dev/null 2>&1; then
+            fail "claude CLI not on PATH. See docs.claude.com/en/docs/claude-code/quickstart"
+            return 1
+        fi
+
+        export CASE_ID="_demo"
+        export EVIDENCE_PATH="${demo_dir}/input"
+        export OUTPUT_PATH="${demo_dir}/output"
+
+        info "Launching Claude Code (this will take ~2-5 min and consume tokens)…"
+        cd "$MH_HOME"
+
+        local prompt
+        prompt="$(cat <<'EOP'
+Use the triage-orchestrator skill to autonomously triage every artifact under
+the EVIDENCE_PATH directory. For each artifact:
+
+1. Call os_detect to classify it.
+2. If macOS plist, call mac_plist_get to extract structured contents.
+3. Record findings with finding_record, every claim pinned to specific bytes
+   from the artifact (use the raw_excerpt field of the pin).
+4. When uncertain, call chain_acknowledge_gap rather than guessing.
+5. Stop when every artifact has been triaged.
+
+Final output should land in OUTPUT_PATH:
+  - findings.json (pinned findings)
+  - narrative.md (investigator-readable report)
+  - accuracy-report.md (FP/FN/uncertain tally)
+
+The Stop hook will verify the chain and sign the attestation.
+EOP
+)"
+
+        if claude "$prompt"; then
+            ok "Autonomous triage complete."
+            echo ""
+            info "Verifying chain + signature post-run:"
+            cmd_verify "_demo"
+        else
+            fail "Claude Code exited non-zero. Check above for errors."
+            return 1
+        fi
+    fi
 }
 
 # ─── help ────────────────────────────────────────────────────────────────────
@@ -501,8 +573,10 @@ ${BOLD}COMMANDS${NC}
     doctor                    Health check across env, deps, auth, keys.
     self-collect [DEST]       Copy safe DFIR artifacts from this host into DEST
                               (default cases/_self/input). No root, no creds.
-    demo                      Real-data showcase: self-collect + parse + chain
+    demo [--autonomous]       Real-data showcase: self-collect + parse + chain
                               tamper-detect, all on YOUR machine, no tokens.
+                              --autonomous adds a Claude Code triage run after
+                              the local demo (consumes tokens).
     run <case-id>             Run Claude Code triage on cases/<id>/input/.
     verify <case-id>          Verify chain-of-custody integrity for a case.
     status                    List cases + their phase.
