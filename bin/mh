@@ -360,74 +360,130 @@ cmd_check() {
     fi
 }
 
+# ─── self-collect ────────────────────────────────────────────────────────────
+
+cmd_self_collect() {
+    local dest="${1:-${MH_CASES_DIR}/_self/input}"
+    "${MH_HOME}/scripts/self-collect.sh" "$dest"
+}
+
 # ─── demo ────────────────────────────────────────────────────────────────────
 
 cmd_demo() {
-    info "MemoryHound trust-chain demo (no real evidence + no Claude tokens needed)"
+    info "MemoryHound real-data demo — collects safe artifacts from THIS host,"
+    info "runs them through MemoryHound's tools, proves chain tamper-detection."
+    info "No network, no Claude tokens. All read-only on host."
     echo ""
 
-    local demo_dir="${MH_HOME}/cases/_demo"
+    local demo_dir="${MH_CASES_DIR}/_demo"
     rm -rf "$demo_dir"
     mkdir -p "${demo_dir}/input" "${demo_dir}/output"
-    echo "fake evidence — pretend this is a memory dump" > "${demo_dir}/input/sample.bin"
-    echo "fake regf hive bytes" > "${demo_dir}/input/NTUSER.DAT"
+
+    info "Step 1: self-collect host artifacts"
+    "${MH_HOME}/scripts/self-collect.sh" "${demo_dir}/input" 2>&1 | sed 's/^/    /'
 
     local chain="${demo_dir}/output/chain.jsonl"
+    export EVIDENCE_PATH="${demo_dir}/input"
+    export OUTPUT_PATH="${demo_dir}/output"
 
-    info "Step 1: chain_init (genesis entry)"
+    echo ""
+    info "Step 2: chain_init — write genesis entry to chain.jsonl"
     "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_init \
         --output "$chain" \
         --case-id "demo" \
         --evidence-path "${demo_dir}/input" \
         --agent-version "memoryhound@0.1.0" \
         --model "claude-opus-4-7" >/dev/null
-    ok "    chain.jsonl created"
+    ok "    chain initialized"
 
-    info "Step 2: ingest each artifact (computes sha256+sha1, appends entry)"
-    export EVIDENCE_PATH="${demo_dir}/input"
-    export OUTPUT_PATH="${demo_dir}/output"
-    for f in "${demo_dir}/input"/*; do
+    echo ""
+    info "Step 3: ingest each real artifact (compute sha256 + sha1 of actual bytes)"
+    local ingested=0
+    while IFS= read -r f; do
         "$MH_PY" -m protocol_sift_mcp.tools.evidence ingest --chain "$chain" --artifact "$f" >/dev/null
-        ok "    ingested $(basename "$f")"
-    done
+        ingested=$((ingested + 1))
+    done < <(find "${demo_dir}/input" -type f)
+    ok "    $ingested artifacts ingested"
 
-    info "Step 3: simulate 3 tool calls (what hooks log automatically during agent run)"
-    for i in 1 2 3; do
+    echo ""
+    info "Step 4: classify each artifact with os_detect + run matching parser"
+    local findings=0
+    while IFS= read -r f; do
+        local rel="${f#${demo_dir}/input/}"
+        local classification
+        classification=$(PYTHONPATH="${MH_HOME}/mcp-server/src" "$MH_PY" -c "
+from protocol_sift_mcp.tools import parse, macos
+import json, sys
+path = '$f'
+det = parse.os_detect(path)
+out = {'rel': '$rel', 'os': det['os'], 'class': det['evidence_class'], 'conf': det['confidence']}
+if det['evidence_class'] == 'plist':
+    try:
+        r = macos.mac_plist_get(path)
+        out['format'] = r['format']
+        out['root_keys_count'] = len(r['root_keys'])
+        out['top3_keys'] = r['root_keys'][:3]
+    except Exception as e:
+        out['parse_error'] = str(e)[:80]
+print(json.dumps(out))
+" 2>&1) || classification="{}"
+        echo "    [$rel]"
+        echo "        $classification" | sed 's/^/        /'
+
         "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_append \
             --chain "$chain" \
             --event "tool_call" \
-            --data "{\"tool\":\"win_registry_get\",\"args\":{\"i\":$i},\"result_hash\":\"abc\"}" >/dev/null
-    done
-    ok "    3 tool_call entries appended"
+            --data "{\"tool\":\"os_detect+parse\",\"artifact\":\"$rel\",\"result\":$classification}" >/dev/null
+        findings=$((findings + 1))
+    done < <(find "${demo_dir}/input" -type f)
+    ok "    $findings classifications recorded to chain"
 
-    info "Step 4: verify chain — should be VALID"
-    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain"; then
-        ok "    chain valid as expected"
-    fi
-
-    info "Step 5: tamper one entry (change a tool argument)"
-    cp "$chain" "${chain}.bak"
-    sed -i.tmp 's/"i":2/"i":999/' "$chain"
-    rm -f "${chain}.tmp"
-    ok "    tampered seq=4 (changed i=2 to i=999)"
-
-    info "Step 6: re-verify — should DETECT tamper"
-    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain"; then
-        fail "    chain reported valid AFTER tamper — this is a bug"
-        return 1
+    echo ""
+    info "Step 5: verify chain integrity"
+    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain" >/dev/null; then
+        ok "    ✓ chain valid"
     else
-        ok "    chain INVALID — tamper detected"
-    fi
-
-    info "Step 7: restore + verify green again"
-    mv "${chain}.bak" "$chain"
-    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain"; then
-        ok "    chain valid again after restore"
+        fail "    chain reported invalid — this is a bug"
+        return 1
     fi
 
     echo ""
-    ok "Demo complete. Trust stack works."
-    info "Demo artifacts: ${demo_dir}/output/"
+    info "Step 6: TAMPER one entry (silently change a finding's classification)"
+    cp "$chain" "${chain}.bak"
+    sed -i.tmp 's/"os":"macos"/"os":"linux"/' "$chain"
+    rm -f "${chain}.tmp"
+    ok "    swapped one 'macos' classification to 'linux'"
+
+    echo ""
+    info "Step 7: re-verify — chain should DETECT the tamper"
+    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain" 2>&1 | head -1; then
+        fail "    chain reported valid AFTER tamper — this is a bug"
+        return 1
+    else
+        ok "    ✗ chain INVALID — tamper detected (as expected)"
+    fi
+
+    echo ""
+    info "Step 8: restore + re-verify (chain valid again)"
+    mv "${chain}.bak" "$chain"
+    if "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_verify --chain "$chain" >/dev/null; then
+        ok "    ✓ chain valid again"
+    fi
+
+    echo ""
+    ok "Demo complete."
+    echo ""
+    info "What just happened:"
+    echo "    1. Collected $ingested real DFIR artifacts from your Mac (read-only)"
+    echo "    2. Ingested every byte into a tamper-evident hash chain"
+    echo "    3. Ran os_detect + matching parser on each → real findings extracted"
+    echo "    4. Verified chain → green"
+    echo "    5. Edited one entry post-hoc → chain detected it"
+    echo "    6. Restored → chain green again"
+    echo ""
+    info "Artifacts saved to:"
+    echo "    ${demo_dir}/input/    — read-only host artifact copies"
+    echo "    ${demo_dir}/output/chain.jsonl  — the audit log (tamper-evident)"
 }
 
 # ─── help ────────────────────────────────────────────────────────────────────
@@ -443,7 +499,10 @@ ${BOLD}COMMANDS${NC}
     init [--with-forensics]   First-time setup: venv, deps, ed25519 keys.
                               --with-forensics adds heavy libs (Volatility, etc.)
     doctor                    Health check across env, deps, auth, keys.
-    demo                      Trust-chain showcase — no real evidence, no Claude tokens.
+    self-collect [DEST]       Copy safe DFIR artifacts from this host into DEST
+                              (default cases/_self/input). No root, no creds.
+    demo                      Real-data showcase: self-collect + parse + chain
+                              tamper-detect, all on YOUR machine, no tokens.
     run <case-id>             Run Claude Code triage on cases/<id>/input/.
     verify <case-id>          Verify chain-of-custody integrity for a case.
     status                    List cases + their phase.
@@ -475,16 +534,17 @@ main() {
     local cmd="${1:-help}"
     shift || true
     case "$cmd" in
-        init)    cmd_init "$@" ;;
-        doctor)  cmd_doctor "$@" ;;
-        demo)    cmd_demo "$@" ;;
-        run)     cmd_run "$@" ;;
-        verify)  cmd_verify "$@" ;;
-        status)  cmd_status "$@" ;;
-        tools)   cmd_tools "$@" ;;
-        check)   cmd_check "$@" ;;
+        init)         cmd_init "$@" ;;
+        doctor)       cmd_doctor "$@" ;;
+        demo)         cmd_demo "$@" ;;
+        self-collect) cmd_self_collect "$@" ;;
+        run)          cmd_run "$@" ;;
+        verify)       cmd_verify "$@" ;;
+        status)       cmd_status "$@" ;;
+        tools)        cmd_tools "$@" ;;
+        check)        cmd_check "$@" ;;
         help|-h|--help) cmd_help ;;
-        *)       fail "Unknown command: $cmd"; cmd_help; return 2 ;;
+        *)            fail "Unknown command: $cmd"; cmd_help; return 2 ;;
     esac
 }
 
