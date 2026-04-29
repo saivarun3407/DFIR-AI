@@ -17,6 +17,7 @@ from mcp.types import TextContent, Tool
 
 from .tools import evidence as ev
 from .tools import finding as fd
+from .tools import macos as mac
 from .tools import parse as ps
 from .tools import windows as win
 
@@ -202,6 +203,44 @@ async def list_tools() -> list[Tool]:
                 "required": ["path"],
             },
         ),
+        Tool(
+            name="mac_plist_get",
+            description=(
+                "Parse a macOS property list (XML or binary). Returns {path, format, "
+                "size, root_keys, key_path, value, value_type}. key_path is dot-separated "
+                "(e.g. 'Apps.com.apple.dock.RecentDocs.0'). Bytes coerced to hex for JSON safety."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "plist_path": {"type": "string", "description": "Path to .plist under /input"},
+                    "key_path": {
+                        "type": "string",
+                        "description": "Optional dot-separated traversal; empty = root",
+                        "default": "",
+                    },
+                },
+                "required": ["plist_path"],
+            },
+        ),
+        Tool(
+            name="mac_knowledgec_query",
+            description=(
+                "Read-only SQLite query against knowledgeC.db (app usage, screen time, "
+                "focus). Pass either {table} for full dump or {sql} for SELECT/WITH only. "
+                "Located at ~/Library/Application Support/Knowledge/knowledgeC.db."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "db_path": {"type": "string"},
+                    "table": {"type": "string", "description": "Table name to dump"},
+                    "sql": {"type": "string", "description": "Custom SELECT/WITH query"},
+                    "limit": {"type": "integer", "default": 100, "minimum": 1, "maximum": 100000},
+                },
+                "required": ["db_path"],
+            },
+        ),
     ]
 
 
@@ -275,6 +314,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=str(result))]
     if name == "magic_check":
         result = ps.magic_check(arguments["path"])
+        return [TextContent(type="text", text=str(result))]
+    if name == "mac_plist_get":
+        result = mac.mac_plist_get(
+            arguments["plist_path"],
+            arguments.get("key_path", ""),
+        )
+        return [TextContent(type="text", text=str(result))]
+    if name == "mac_knowledgec_query":
+        result = mac.mac_knowledgec_query(
+            arguments["db_path"],
+            sql=arguments.get("sql"),
+            table=arguments.get("table"),
+            limit=arguments.get("limit", 100),
+        )
         return [TextContent(type="text", text=str(result))]
     raise ValueError(f"Unknown tool: {name}")
 
