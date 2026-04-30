@@ -464,8 +464,9 @@ cmd_demo() {
     local autonomous=0
     for arg in "$@"; do
         case "$arg" in
-            --autonomous|--auto) autonomous=1 ;;
+            --autonomous|--auto|--automous|--autonomus) autonomous=1 ;;
             -h|--help) echo "Usage: mh demo [--autonomous]"; return 0 ;;
+            --*) warn "Unknown flag: $arg (did you mean --autonomous?)"; return 2 ;;
         esac
     done
 
