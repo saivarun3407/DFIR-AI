@@ -38,11 +38,37 @@ info()   { echo -e "${BOLD}»${NC} $*"; }
 claude_run() {
     local prompt="$1"
     local allowed="mcp__protocol_sift__hash,mcp__protocol_sift__chain_append,mcp__protocol_sift__chain_verify,mcp__protocol_sift__chain_acknowledge_gap,mcp__protocol_sift__finding_record,mcp__protocol_sift__os_detect,mcp__protocol_sift__magic_check,mcp__protocol_sift__win_registry_get,mcp__protocol_sift__win_prefetch_parse,mcp__protocol_sift__win_evtx_query,mcp__protocol_sift__win_lnk_parse,mcp__protocol_sift__mac_plist_get,mcp__protocol_sift__mac_knowledgec_query,Read,Glob,Grep,TodoWrite"
+
+    # Write resolved mcp-config at runtime — claude doesn't substitute
+    # ${CLAUDE_PROJECT_DIR} in --mcp-config files, so we materialize the
+    # absolute paths and current EVIDENCE/OUTPUT/CASE env vars.
+    local mcp_cfg
+    mcp_cfg="$(mktemp -t mh-mcp-XXXXXX.json)"
+    cat > "$mcp_cfg" <<EOF
+{
+  "mcpServers": {
+    "protocol_sift": {
+      "command": "${MH_HOME}/bin/mh-mcp-server",
+      "args": [],
+      "env": {
+        "EVIDENCE_PATH": "${EVIDENCE_PATH:-}",
+        "OUTPUT_PATH": "${OUTPUT_PATH:-}",
+        "CASE_ID": "${CASE_ID:-}",
+        "MH_HOME": "${MH_HOME}"
+      }
+    }
+  }
+}
+EOF
+    export CLAUDE_PROJECT_DIR="$MH_HOME"
+    local rc=0
     if [[ "${MH_CLAUDE_DEBUG:-0}" == "1" ]]; then
-        printf '%s' "$prompt" | claude -p -d --allowedTools "$allowed"
+        printf '%s' "$prompt" | claude -p -d --mcp-config "$mcp_cfg" --allowedTools "$allowed" || rc=$?
     else
-        printf '%s' "$prompt" | claude -p --allowedTools "$allowed"
+        printf '%s' "$prompt" | claude -p --mcp-config "$mcp_cfg" --allowedTools "$allowed" || rc=$?
     fi
+    rm -f "$mcp_cfg"
+    return $rc
 }
 
 # ─── doctor ──────────────────────────────────────────────────────────────────
@@ -460,12 +486,12 @@ cmd_demo() {
     info "Step 1: self-collect host artifacts"
     "${MH_HOME}/scripts/self-collect.sh" "${demo_dir}/input" 2>&1 | sed 's/^/    /'
 
-    local chain="${demo_dir}/output/chain.jsonl"
+    local chain="${demo_dir}/output/chain-of-custody.jsonl"
     export EVIDENCE_PATH="${demo_dir}/input"
     export OUTPUT_PATH="${demo_dir}/output"
 
     echo ""
-    info "Step 2: chain_init — write genesis entry to chain.jsonl"
+    info "Step 2: chain_init — write genesis entry to chain-of-custody.jsonl"
     "$MH_PY" -m protocol_sift_mcp.tools.evidence chain_init \
         --output "$chain" \
         --case-id "demo" \
@@ -561,7 +587,7 @@ print(json.dumps(out))
     echo ""
     info "Artifacts saved to:"
     echo "    ${demo_dir}/input/    — read-only host artifact copies"
-    echo "    ${demo_dir}/output/chain.jsonl  — the audit log (tamper-evident)"
+    echo "    ${demo_dir}/output/chain-of-custody.jsonl  — the audit log (tamper-evident)"
 
     if [[ $autonomous -eq 1 ]]; then
         echo ""

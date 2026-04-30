@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "protocol_sift": {
+      "command": "${CLAUDE_PROJECT_DIR}/bin/mh-mcp-server",
+      "args": [],
+      "env": {
+        "EVIDENCE_PATH": "${EVIDENCE_PATH}",
+        "OUTPUT_PATH": "${OUTPUT_PATH}",
+        "CASE_ID": "${CASE_ID}",
+        "MH_HOME": "${CLAUDE_PROJECT_DIR}"
+      }
+    }
+  }
+}
