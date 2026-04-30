@@ -60,35 +60,22 @@ claude_run() {
 }
 EOF
     export CLAUDE_PROJECT_DIR="$MH_HOME"
+    trap 'rm -f "$mcp_cfg"' RETURN
 
-    # Heartbeat so the user can tell it's still working (claude -p is silent
-    # until done — easy to misread as hung when it's processing 9 artifacts).
-    local heartbeat_pid=""
-    (
-        local seconds=0
-        while true; do
-            sleep 15
-            seconds=$((seconds + 15))
-            local mins=$((seconds / 60))
-            local secs=$((seconds % 60))
-            printf '\r  [claude working… %dm %02ds elapsed — typically 5-9 min]' "$mins" "$secs" >&2
-        done
-    ) &
-    heartbeat_pid=$!
-    trap 'kill $heartbeat_pid 2>/dev/null || true; rm -f "$mcp_cfg"' RETURN
-
-    local rc=0
-    if [[ "${MH_CLAUDE_DEBUG:-0}" == "1" ]]; then
-        printf '%s' "$prompt" | claude -p -d --mcp-config "$mcp_cfg" --allowedTools "$allowed" || rc=$?
-    else
-        printf '%s' "$prompt" | claude -p --mcp-config "$mcp_cfg" --allowedTools "$allowed" || rc=$?
+    if [[ "${MH_CLAUDE_HEADLESS:-0}" == "1" ]]; then
+        # Headless: -p print mode for CI/scripts. Silent. Use MH_CLAUDE_HEADLESS=1.
+        printf '%s' "$prompt" | claude -p --mcp-config "$mcp_cfg" --allowedTools "$allowed"
+        return $?
     fi
 
-    kill $heartbeat_pid 2>/dev/null || true
-    wait $heartbeat_pid 2>/dev/null || true
-    printf '\r%-80s\r' '' >&2
-    rm -f "$mcp_cfg"
-    return $rc
+    # Default: full interactive Claude Code TUI. User sees tool calls + reasoning
+    # live. Claude exits autonomously when prompt is satisfied; if it stalls
+    # waiting for user input, type /exit.
+    info "Claude Code will open in your terminal. You'll see every tool call"
+    info "live (os_detect, mac_plist_get, finding_record, etc)."
+    info "When triage is complete or you want to stop, type /exit."
+    sleep 1
+    claude --mcp-config "$mcp_cfg" --allowedTools "$allowed" -- "$prompt"
 }
 
 # ─── doctor ──────────────────────────────────────────────────────────────────
