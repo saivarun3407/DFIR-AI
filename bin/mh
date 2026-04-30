@@ -19,11 +19,11 @@ MH_PY="${MH_VENV}/bin/python"
 MH_KEYS_DIR="${MH_HOME}/keys"
 MH_CASES_DIR="${MH_HOME}/cases"
 
-GREEN="\033[0;32m"
-RED="\033[0;31m"
-YELLOW="\033[0;33m"
-BOLD="\033[1m"
-NC="\033[0m"
+GREEN=$'\e[0;32m'
+RED=$'\e[0;31m'
+YELLOW=$'\e[0;33m'
+BOLD=$'\e[1m'
+NC=$'\e[0m'
 
 ok()     { echo -e "${GREEN}✓${NC} $*"; }
 warn()   { echo -e "${YELLOW}!${NC} $*"; }
