@@ -40,8 +40,7 @@ claude_run() {
     local allowed="mcp__protocol_sift__hash,mcp__protocol_sift__chain_append,mcp__protocol_sift__chain_verify,mcp__protocol_sift__chain_acknowledge_gap,mcp__protocol_sift__finding_record,mcp__protocol_sift__os_detect,mcp__protocol_sift__magic_check,mcp__protocol_sift__win_registry_get,mcp__protocol_sift__win_prefetch_parse,mcp__protocol_sift__win_evtx_query,mcp__protocol_sift__win_lnk_parse,mcp__protocol_sift__mac_plist_get,mcp__protocol_sift__mac_knowledgec_query,Read,Glob,Grep,TodoWrite"
 
     # Write resolved mcp-config at runtime — claude doesn't substitute
-    # ${CLAUDE_PROJECT_DIR} in --mcp-config files, so we materialize the
-    # absolute paths and current EVIDENCE/OUTPUT/CASE env vars.
+    # ${CLAUDE_PROJECT_DIR} in --mcp-config files.
     local mcp_cfg
     mcp_cfg="$(mktemp -t mh-mcp-XXXXXX.json)"
     cat > "$mcp_cfg" <<EOF
@@ -61,12 +60,33 @@ claude_run() {
 }
 EOF
     export CLAUDE_PROJECT_DIR="$MH_HOME"
+
+    # Heartbeat so the user can tell it's still working (claude -p is silent
+    # until done — easy to misread as hung when it's processing 9 artifacts).
+    local heartbeat_pid=""
+    (
+        local seconds=0
+        while true; do
+            sleep 15
+            seconds=$((seconds + 15))
+            local mins=$((seconds / 60))
+            local secs=$((seconds % 60))
+            printf '\r  [claude working… %dm %02ds elapsed — typically 5-9 min]' "$mins" "$secs" >&2
+        done
+    ) &
+    heartbeat_pid=$!
+    trap 'kill $heartbeat_pid 2>/dev/null || true; rm -f "$mcp_cfg"' RETURN
+
     local rc=0
     if [[ "${MH_CLAUDE_DEBUG:-0}" == "1" ]]; then
         printf '%s' "$prompt" | claude -p -d --mcp-config "$mcp_cfg" --allowedTools "$allowed" || rc=$?
     else
         printf '%s' "$prompt" | claude -p --mcp-config "$mcp_cfg" --allowedTools "$allowed" || rc=$?
     fi
+
+    kill $heartbeat_pid 2>/dev/null || true
+    wait $heartbeat_pid 2>/dev/null || true
+    printf '\r%-80s\r' '' >&2
     rm -f "$mcp_cfg"
     return $rc
 }
@@ -641,12 +661,32 @@ EOP
         if claude_run "$prompt"; then
             ok "Autonomous triage complete."
             echo ""
+
+            # Sign attestation manually (Stop hook doesn't always fire in -p mode).
+            local key="${MH_KEYS_DIR}/ed25519.priv"
+            local findings="${demo_dir}/output/findings.json"
+            local chain="${demo_dir}/output/chain-of-custody.jsonl"
+            local attest="${demo_dir}/output/case-_demo.attestation.json"
+            if [[ -f "$key" ]] && [[ -f "$findings" ]] && [[ -f "$chain" ]]; then
+                info "Signing attestation with ed25519 key…"
+                "$MH_PY" -m protocol_sift_mcp.tools.evidence attest \
+                    --chain "$chain" \
+                    --findings "$findings" \
+                    --case-id "_demo" \
+                    --key "$key" \
+                    --output "$attest" >/dev/null && \
+                    ok "Attestation: $attest"
+            fi
+
             info "Verifying chain + signature post-run:"
             cmd_verify "_demo"
             echo ""
             info "Generating plain-English summary (no LLM, deterministic)…"
             "$MH_PY" "${MH_HOME}/scripts/plain-summary.py" "$demo_dir" >/dev/null
             ok "Plain-English summary at ${demo_dir}/output/summary.md"
+            echo ""
+            info "View everything in browser:"
+            echo "    ./bin/mh serve"
         else
             fail "Claude Code exited non-zero. Check above for errors."
             return 1
