@@ -245,6 +245,35 @@ cmd_run() {
     claude "Use the triage-orchestrator skill to autonomously triage every artifact under ${input_dir}. Route to the correct OS specialist. Pin every finding. Acknowledge gaps explicitly. Stop when triage is complete."
 }
 
+# ─── serve (local web viewer) ────────────────────────────────────────────────
+
+cmd_serve() {
+    local port="${MH_SERVE_PORT:-8765}"
+    local host="127.0.0.1"
+    for arg in "$@"; do
+        case "$arg" in
+            --port=*) port="${arg#--port=}" ;;
+            --host=*) host="${arg#--host=}" ;;
+            -h|--help) echo "Usage: mh serve [--port=8765] [--host=127.0.0.1]"; return 0 ;;
+        esac
+    done
+
+    if ! "$MH_PY" -c "import markdown" 2>/dev/null; then
+        info "Installing markdown viewer dep into venv (one-time)…"
+        "$MH_PY" -m pip install --quiet markdown pygments
+    fi
+
+    info "Starting MemoryHound viewer on http://${host}:${port}/"
+    info "Press Ctrl-C to stop."
+    echo ""
+    if command -v open >/dev/null 2>&1; then
+        ( sleep 1 && open "http://${host}:${port}/" ) &
+    elif command -v xdg-open >/dev/null 2>&1; then
+        ( sleep 1 && xdg-open "http://${host}:${port}/" ) &
+    fi
+    "$MH_PY" "${MH_HOME}/scripts/serve.py" --host "$host" --port "$port"
+}
+
 # ─── report (plain-English summary, no LLM, no tokens) ──────────────────────
 
 cmd_report() {
@@ -605,6 +634,8 @@ ${BOLD}COMMANDS${NC}
     run <case-id>             Run Claude Code triage on cases/<id>/input/.
     report <case-id>          Generate plain-English summary from findings
                               (deterministic, no LLM, no tokens).
+    serve [--port=N]          Local web viewer for cases (markdown rendered,
+                              chain log pretty-printed). Default port 8765.
     verify <case-id>          Verify chain-of-custody integrity for a case.
     status                    List cases + their phase.
     tools                     List MCP tools the agent can call.
@@ -641,6 +672,7 @@ main() {
         self-collect) cmd_self_collect "$@" ;;
         run)          cmd_run "$@" ;;
         report)       cmd_report "$@" ;;
+        serve)        cmd_serve "$@" ;;
         verify)       cmd_verify "$@" ;;
         status)       cmd_status "$@" ;;
         tools)        cmd_tools "$@" ;;
