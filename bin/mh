@@ -38,11 +38,11 @@ info()   { echo -e "${BOLD}»${NC} $*"; }
 claude_run() {
     local prompt="$1"
     local allowed="mcp__protocol_sift__hash,mcp__protocol_sift__chain_append,mcp__protocol_sift__chain_verify,mcp__protocol_sift__chain_acknowledge_gap,mcp__protocol_sift__finding_record,mcp__protocol_sift__os_detect,mcp__protocol_sift__magic_check,mcp__protocol_sift__win_registry_get,mcp__protocol_sift__win_prefetch_parse,mcp__protocol_sift__win_evtx_query,mcp__protocol_sift__win_lnk_parse,mcp__protocol_sift__mac_plist_get,mcp__protocol_sift__mac_knowledgec_query,Read,Glob,Grep,TodoWrite"
-    local debug_args=()
     if [[ "${MH_CLAUDE_DEBUG:-0}" == "1" ]]; then
-        debug_args+=("-d")
+        printf '%s' "$prompt" | claude -p -d --allowedTools "$allowed"
+    else
+        printf '%s' "$prompt" | claude -p --allowedTools "$allowed"
     fi
-    printf '%s' "$prompt" | claude -p "${debug_args[@]}" --allowedTools "$allowed"
 }
 
 # ─── doctor ──────────────────────────────────────────────────────────────────
