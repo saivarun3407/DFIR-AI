@@ -30,6 +30,17 @@ warn()   { echo -e "${YELLOW}!${NC} $*"; }
 fail()   { echo -e "${RED}✗${NC} $*"; }
 info()   { echo -e "${BOLD}»${NC} $*"; }
 
+# ─── claude wrapper ──────────────────────────────────────────────────────────
+
+# claude_run: pipe a prompt to claude in non-interactive autonomous mode.
+# We pass the prompt via stdin because --allowedTools is variadic and would
+# consume the prompt as another tool name if passed positionally.
+claude_run() {
+    local prompt="$1"
+    local allowed="mcp__protocol_sift__hash,mcp__protocol_sift__chain_append,mcp__protocol_sift__chain_verify,mcp__protocol_sift__chain_acknowledge_gap,mcp__protocol_sift__finding_record,mcp__protocol_sift__os_detect,mcp__protocol_sift__magic_check,mcp__protocol_sift__win_registry_get,mcp__protocol_sift__win_prefetch_parse,mcp__protocol_sift__win_evtx_query,mcp__protocol_sift__win_lnk_parse,mcp__protocol_sift__mac_plist_get,mcp__protocol_sift__mac_knowledgec_query,Read,Glob,Grep,TodoWrite"
+    printf '%s' "$prompt" | claude -p --allowedTools "$allowed"
+}
+
 # ─── doctor ──────────────────────────────────────────────────────────────────
 
 cmd_doctor() {
@@ -242,7 +253,7 @@ cmd_run() {
 
     info "Launching Claude Code with triage-orchestrator skill"
     cd "$MH_HOME"
-    claude -p --allowedTools "mcp__protocol_sift__hash mcp__protocol_sift__chain_append mcp__protocol_sift__chain_verify mcp__protocol_sift__chain_acknowledge_gap mcp__protocol_sift__finding_record mcp__protocol_sift__os_detect mcp__protocol_sift__magic_check mcp__protocol_sift__win_registry_get mcp__protocol_sift__win_prefetch_parse mcp__protocol_sift__win_evtx_query mcp__protocol_sift__win_lnk_parse mcp__protocol_sift__mac_plist_get mcp__protocol_sift__mac_knowledgec_query Read Glob Grep TodoWrite" "Use the triage-orchestrator skill to autonomously triage every artifact under ${input_dir}. Route to the correct OS specialist. Pin every finding. Acknowledge gaps explicitly. Stop when triage is complete. Write findings.json, narrative.md, and accuracy-report.md to ${output_dir}."
+    claude_run "Use the triage-orchestrator skill to autonomously triage every artifact under ${input_dir}. Route to the correct OS specialist. Pin every finding. Acknowledge gaps explicitly. Stop when triage is complete. Write findings.json, narrative.md, and accuracy-report.md to ${output_dir}."
 }
 
 # ─── serve (local web viewer) ────────────────────────────────────────────────
@@ -596,7 +607,7 @@ The Stop hook will verify the chain and sign the attestation.
 EOP
 )"
 
-        if claude -p --allowedTools "mcp__protocol_sift__hash mcp__protocol_sift__chain_append mcp__protocol_sift__chain_verify mcp__protocol_sift__chain_acknowledge_gap mcp__protocol_sift__finding_record mcp__protocol_sift__os_detect mcp__protocol_sift__magic_check mcp__protocol_sift__win_registry_get mcp__protocol_sift__win_prefetch_parse mcp__protocol_sift__win_evtx_query mcp__protocol_sift__win_lnk_parse mcp__protocol_sift__mac_plist_get mcp__protocol_sift__mac_knowledgec_query Read Glob Grep TodoWrite" "$prompt"; then
+        if claude_run "$prompt"; then
             ok "Autonomous triage complete."
             echo ""
             info "Verifying chain + signature post-run:"
