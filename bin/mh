@@ -245,6 +245,27 @@ cmd_run() {
     claude "Use the triage-orchestrator skill to autonomously triage every artifact under ${input_dir}. Route to the correct OS specialist. Pin every finding. Acknowledge gaps explicitly. Stop when triage is complete."
 }
 
+# ─── report (plain-English summary, no LLM, no tokens) ──────────────────────
+
+cmd_report() {
+    local case_id="${1:-}"
+    if [[ -z "$case_id" ]]; then
+        fail "Usage: mh report <case-id>"
+        return 2
+    fi
+    local case_dir="${MH_CASES_DIR}/${case_id}"
+    if [[ ! -d "$case_dir/output" ]]; then
+        fail "No output dir at ${case_dir}/output — run mh run first"
+        return 1
+    fi
+    "$MH_PY" "${MH_HOME}/scripts/plain-summary.py" "$case_dir"
+    local out="${case_dir}/output/summary.md"
+    echo ""
+    info "Plain-English summary at ${out}"
+    echo ""
+    head -40 "$out"
+}
+
 # ─── verify ──────────────────────────────────────────────────────────────────
 
 cmd_verify() {
@@ -551,6 +572,10 @@ EOP
             echo ""
             info "Verifying chain + signature post-run:"
             cmd_verify "_demo"
+            echo ""
+            info "Generating plain-English summary (no LLM, deterministic)…"
+            "$MH_PY" "${MH_HOME}/scripts/plain-summary.py" "$demo_dir" >/dev/null
+            ok "Plain-English summary at ${demo_dir}/output/summary.md"
         else
             fail "Claude Code exited non-zero. Check above for errors."
             return 1
@@ -578,6 +603,8 @@ ${BOLD}COMMANDS${NC}
                               --autonomous adds a Claude Code triage run after
                               the local demo (consumes tokens).
     run <case-id>             Run Claude Code triage on cases/<id>/input/.
+    report <case-id>          Generate plain-English summary from findings
+                              (deterministic, no LLM, no tokens).
     verify <case-id>          Verify chain-of-custody integrity for a case.
     status                    List cases + their phase.
     tools                     List MCP tools the agent can call.
@@ -613,6 +640,7 @@ main() {
         demo)         cmd_demo "$@" ;;
         self-collect) cmd_self_collect "$@" ;;
         run)          cmd_run "$@" ;;
+        report)       cmd_report "$@" ;;
         verify)       cmd_verify "$@" ;;
         status)       cmd_status "$@" ;;
         tools)        cmd_tools "$@" ;;
